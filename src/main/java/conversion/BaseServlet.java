@@ -23,6 +23,9 @@ package conversion;
 import javax.servlet.ServletException;
 import javax.servlet.http.*;
 import java.io.*;
+import java.net.URLDecoder;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Date;
 import java.util.Map;
 import java.util.UUID;
@@ -66,7 +69,8 @@ public abstract class BaseServlet extends HttpServlet {
             return;
         }
 
-        updateProgress(individual);
+        // remove me
+//        updateProgress(individual);
 
         response.setContentType("application/json");
         try (final PrintWriter out = response.getWriter()) {
@@ -89,6 +93,10 @@ public abstract class BaseServlet extends HttpServlet {
     protected void doPost(final HttpServletRequest request, final HttpServletResponse response) {
 
         try {
+            LOG.info("CHARSET before: " + request.getCharacterEncoding());
+            request.setCharacterEncoding(StandardCharsets.UTF_8.name());
+            LOG.info("CHARSET after: " + request.getCharacterEncoding());
+
             allowCrossOrigin(response);
 
             final String uuidStr = UUID.randomUUID().toString();
@@ -119,12 +127,14 @@ public abstract class BaseServlet extends HttpServlet {
                 return;
             }
             final int extPos = fileName.lastIndexOf('.');
-            // Limit filenames to chars allowed in unencoded URLs and Windows filenames for now
-            final String fileNameWithoutExt = fileName.substring(0, extPos).replaceAll("[^$\\-_.+!'(),a-zA-Z0-9]", "_");
+
+            // Remove chars prohibited in Windows filenames
+            final String fileNameWithoutExt = fileName.substring(0, extPos).replaceAll("[<>:\"/|?*\\\\]", "_");
             final String ext = fileName.substring(extPos + 1);
 
             fileName = fileNameWithoutExt + '.' + ext;
 
+            LOG.info("REBUILT FILENAME: " + fileName);
             final String userInputDirPath = INPUTPATH + uuidStr;
             final File inputDir = new File(userInputDirPath);
             if (!inputDir.exists()) {
@@ -155,15 +165,30 @@ public abstract class BaseServlet extends HttpServlet {
             final Map<String, String[]> parameterMap = request.getParameterMap();
             final String name = fileName;
 
+            // read into vars, had some weird issues with methods returning null
+            final String contextURL = getContextURL(request);
+            final String inputDirStr = inputDir.getAbsolutePath();
+            final String outputDirStr = outputDir.getAbsolutePath();
+
+            LOG.severe("CONVERT START");
             queue.submit(() -> {
                 try {
-                    convert(individual, parameterMap, name, inputDir.getAbsolutePath(),
-                            outputDir.getAbsolutePath(), fileNameWithoutExt, ext,
-                            getContextURL(request));
-                } finally {
+                    LOG.severe("QUEUE SUBMIT");
+                    convert(individual, parameterMap, name, inputDirStr,
+                            outputDirStr, fileNameWithoutExt, ext,
+                            contextURL);
+                    // Conversion permanently queued never run???
+                    LOG.severe("CONVERT QUEUE FINISH");
+                } catch (Exception e) {
+                    LOG.severe("EXCEPTION CAUGHT: " + e.toString());
+                }
+                finally {
                     individual.isAlive = false;
+                    LOG.severe("FINALLY BLOCK");
                 }
             });
+
+            LOG.severe("CONVERT FINISH");
 
             response.setContentType("application/json");
             try (final PrintWriter out = response.getWriter()) {
@@ -172,22 +197,53 @@ public abstract class BaseServlet extends HttpServlet {
 
         } catch (final ServletException | IOException e) {
             e.printStackTrace();
-            LOG.severe(e.getMessage());
+            LOG.severe(e.toString());
         }
     }
 
     abstract void convert(final Individual individual, final Map<String, String[]> parameterMap, final String fileName,
-            final String inputDirectory, final String outputDirectory,
-            final String fileNameWithoutExt, final String ext, final String contextURL);
+                          final String inputDirectory, final String outputDirectory,
+                          final String fileNameWithoutExt, final String ext, final String contextURL);
 
-    private String getFileName(final Part part) {
-        for (String content : part.getHeader("content-disposition").split(";")) {
-            if (content.trim().startsWith("filename")) {
-                return content.substring(
-                        content.indexOf('=') + 1).trim().replace("\"", "");
+    private String getFileName(final Part part) throws UnsupportedEncodingException { // if you don't support UTF-8 u have much bigger problems than this exception
+        for (String headerData : part.getHeader("content-disposition").split(";")) {
+            LOG.info("HEADER PART: " + headerData);
+            if (headerData.trim().startsWith("filename")) {
+                // trim 'filename=' parameter name
+                headerData = new String(headerData.getBytes(), StandardCharsets.UTF_8); // request data should be set to UTF-8 - EDIT: WHY IS THE ENCODING 'NULL' ARE YOU KIDDING ME
+                LOG.info("filename HEADER DATA = " + headerData);
+                String rawFileName = headerData.substring(headerData.indexOf('=') + 1).trim().replace("\"", "");
+                // deal with percent encoding for foreign & special characters
+                return decodeURI(rawFileName);
             }
         }
         return null;
+    }
+
+    /**
+     * Decodes the given percent-encoded string according to RFC-3986 (TODO: link -> https://tools.ietf.org/html/rfc3986)
+     *
+     * @param uri - the URI string to decode
+     * @return String, the decoded string
+     * @throws UnsupportedEncodingException
+     */
+    static String decodeURI(String uri) throws UnsupportedEncodingException {
+        String decoded = URLDecoder.decode(uri, StandardCharsets.UTF_8.name());
+        LOG.info("RAW FILENAME = " + uri + "\nDECODED FILENAME = " + decoded);
+        return decoded;
+    }
+
+    /**
+     * Encode the given string using percent-encoding, according to RFC-3986
+     *
+     * @param uri - the URI string to encode
+     * @return String, the decoded string
+     * @throws UnsupportedEncodingException
+     */
+    static String encodeURI(String uri) throws UnsupportedEncodingException {
+        String encoded = URLEncoder.encode(uri, StandardCharsets.UTF_8.name());
+        LOG.info("RAW FILENAME = " + uri + "\nENCODED FILENAME = " + encoded);
+        return encoded;
     }
 
     /**
@@ -199,7 +255,14 @@ public abstract class BaseServlet extends HttpServlet {
      */
     protected static String getContextURL(final HttpServletRequest request) {
         final StringBuffer full = request.getRequestURL();
-        return full.substring(0, full.length() - request.getServletPath().length());
+        try {
+            return full.substring(0, full.length() - request.getServletPath().length());
+        } catch (Exception e) {
+            LOG.severe("Error getting contextURL" + e.toString());
+        }
+        // TODO: throw error. I added this bit as request.getServletPath() was returning null for some reason
+        // May be related to perma-queue issue I was seeing.
+        return "";
     }
 
     protected static String[] getConversionParams(final String settings) {
