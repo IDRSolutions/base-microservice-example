@@ -22,9 +22,12 @@ package conversion;
 
 import conversion.utils.DownloadHelper;
 import conversion.utils.HttpHelper;
-import javax.servlet.ServletException;
-import javax.servlet.http.*;
-import java.io.*;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.PrintWriter;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
@@ -36,6 +39,11 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import javax.naming.SizeLimitExceededException;
+import javax.servlet.http.HttpServlet;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import javax.servlet.http.Part;
+import javax.servlet.ServletException;
 
 /**
  * An extendable base for conversion microservices. Provides general
@@ -58,7 +66,7 @@ public abstract class BaseServlet extends HttpServlet {
     private final ExecutorService convertQueue = Executors.newFixedThreadPool(PCOUNT);
     private final ExecutorService downloadQueue = Executors.newFixedThreadPool(5);
     private final ScheduledExecutorService callbackQueue = Executors.newScheduledThreadPool(5);
-
+    
     /**
      * Get the location where input files is stored
      * @return inputPath the path where input files is stored
